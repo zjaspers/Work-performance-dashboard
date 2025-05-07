@@ -11,23 +11,20 @@ st.markdown("""
 <style>
     .block-container { padding: 2rem; font-family: 'Inter', sans-serif; }
     .stMetric { text-align: center !important; }
-    .performance-early { color: #155724; font-weight: bold; }
-    .performance-on-time { color: #856404; font-weight: bold; }
-    .performance-late { color: #721c24; font-weight: bold; }
-    .insight-item { 
-        padding: 0.5rem; 
-        background-color: #f7f7f7; 
-        border-radius: 4px; 
-        margin-bottom: 0.5rem; 
+    .insight-item {
+        padding: 0.5rem;
+        background-color: #f7f7f7;
+        border-radius: 4px;
+        margin-bottom: 0.5rem;
     }
     .dataframe tbody tr:hover { background-color: #f1f1f1; }
 </style>
 """, unsafe_allow_html=True)
 
-# Sidebar: uploads and filters
+# Sidebar: file uploads and filters
 st.sidebar.title("Upload & Filters")
-task_file = st.sidebar.file_uploader("➕ Upload Task CSV", type="csv")
-kpi_file = st.sidebar.file_uploader("📊 Upload Store KPI CSV (optional)", type="csv")
+task_file = st.sidebar.file_uploader("➕ Task CSV", type="csv")
+kpi_file  = st.sidebar.file_uploader("📊 Store KPI CSV (optional)", type="csv")
 
 if not task_file:
     st.info("Upload a Task CSV to begin.")
@@ -35,20 +32,22 @@ if not task_file:
 
 # Load and preprocess task data
 df = pd.read_csv(task_file)
-df['End date']       = pd.to_datetime(df['End date'], errors='coerce')
+df['End date'] = pd.to_datetime(df['End date'], errors='coerce')
 df['Date completed'] = pd.to_datetime(df['Date completed'], errors='coerce')
 today = pd.Timestamp.now().normalize()
 
-# Compute speed and overdue
+# Compute Days Before Due and Overdue
 df['Days Before Due'] = (df['End date'] - df['Date completed']).dt.days
 missing = df['Date completed'].isna() & df['End date'].notna()
 df.loc[missing, 'Days Before Due'] = -((df.loc[missing, 'End date'] - today).abs().dt.days)
 df['Overdue'] = (df['End date'] < pd.Timestamp.now()) & (df['Task status'] != 'Completed')
 
-# Clean up hierarchy
+# Clean hierarchy and filter out company/region placeholders
 df['Region'] = df['Level 1'].fillna('Unknown')
-df['Store']  = df['Location name']
-df = df[~df['Store'].isin(['JameTrade', 'Midwest'])]
+df['Store'] = df['Location name']
+df = df[~df['Store'].isin(['JameTrade','Midwest'])]
+
+# Assign each task to its week
 df['Week Start'] = df['End date'].dt.to_period('W').apply(lambda r: r.start_time)
 
 # Week selector
@@ -58,12 +57,12 @@ choice = st.sidebar.selectbox("Select Week", labels)
 start  = weeks[labels.index(choice)]
 week_df = df[df['Week Start'] == start]
 
-# Merge KPI data if provided
+# Merge in KPI data if uploaded
 if kpi_file:
     kpi_df = pd.read_csv(kpi_file).rename(columns={'Location ID':'Location external ID'})
     week_df = week_df.merge(kpi_df, on=['Location external ID','Store'], how='left')
 
-# Filters
+# Filters: by Task and optionally by Store
 task_list  = sorted(week_df['Task name'].unique())
 store_list = sorted(week_df['Store'].unique())
 sel_tasks  = st.sidebar.multiselect("Filter by Task", task_list, default=task_list)
@@ -77,9 +76,9 @@ if sel_stores:
 total   = len(filtered)
 on_time = (filtered['Days Before Due'] >= 0).sum()
 avg_spd = filtered['Days Before Due'].mean()
-overdue = int(filtered['Overdue'].sum())
-adhoc   = (filtered['Store'].value_counts() == 1).sum()
-avg_csat = filtered['CSAT Score'].mean() if 'CSAT Score' in filtered else None
+overdue  = int(filtered['Overdue'].sum())
+adhoc    = (filtered['Store'].value_counts() == 1).sum()
+avg_csat = filtered['CSAT Score'].mean() if 'CSAT Score' in filtered.columns else None
 
 st.title("Task Performance Dashboard")
 st.markdown("### Key Metrics")
@@ -94,13 +93,16 @@ if avg_csat is not None:
 
 # --- Store Status Summary ---
 sb = filtered.groupby('Store').agg(
-    Total_Tasks    = ('Store', 'size'),
-    Overdue_Rate   = ('Overdue', 'mean'),
-    Avg_Days       = ('Days Before Due', 'mean')
+    Total_Tasks=('Store','size'),
+    Overdue_Rate=('Overdue','mean'),
+    Avg_Days     =('Days Before Due','mean')
 )
-if 'CSAT Score'       in filtered: sb['CSAT']       = filtered.groupby('Store')['CSAT Score'].mean()
-if 'Cleanliness Score' in filtered: sb['Cleanliness'] = filtered.groupby('Store')['Cleanliness Score'].mean()
-if 'Sales vs Target (%)' in filtered: sb['Sales_vs_Target'] = filtered.groupby('Store')['Sales vs Target (%)'].mean()
+if 'CSAT Score' in filtered.columns:
+    sb['CSAT'] = filtered.groupby('Store')['CSAT Score'].mean()
+if 'Cleanliness Score' in filtered.columns:
+    sb['Cleanliness'] = filtered.groupby('Store')['Cleanliness Score'].mean()
+if 'Sales vs Target (%)' in filtered.columns:
+    sb['Sales_vs_Target'] = filtered.groupby('Store')['Sales vs Target (%)'].mean()
 
 summary = sb.reset_index()
 summary['Performance'] = summary['Avg_Days'].apply(lambda x: 'Early' if x>0 else ('On Time' if x==0 else 'Late'))
@@ -117,11 +119,11 @@ st.markdown("### Smart, Non-Obvious Insights")
 insights = []
 
 # Effort vs Results
-if 'Expected duration' in filtered and 'CSAT Score' in filtered:
+if 'Expected duration' in filtered.columns and 'CSAT Score' in filtered.columns:
     effort = filtered.groupby('Store')['Expected duration'].sum()
     csat   = filtered.groupby('Store')['CSAT Score'].mean()
     high_eff = effort[effort > effort.quantile(0.8)].index.tolist()
-    insights.append(f"**Effort vs Results:** Top 20% effort stores include {', '.join(high_eff)}.")
+    insights.append(f"**Effort vs Results:** Stores {', '.join(high_eff)} in top 20% effort.")
 
 # Task Saturation
 sat = (
@@ -132,22 +134,22 @@ sat = (
             .reset_index(name='cnt')
 )
 high_sat = sat[sat['cnt'] > 10]['Store'].unique().tolist()
-insights.append(f"**Task Saturation:** Stores {', '.join(high_sat)} had >10 tasks in any 3-day span.")
+insights.append(f"**Task Saturation:** {', '.join(high_sat)} had >10 tasks in any 3-day span.")
 
 # Planned vs Reactive
-tc = filtered.groupby(['Store','Task name']).size().reset_index(name='Count')
-react = tc[tc['Count']==1].groupby('Store')['Count'].count()
-plan  = tc[tc['Count']>1].groupby('Store')['Count'].count().add(0)
-unbal = react[react > plan].index.tolist()
-insights.append(f"**Planned vs Reactive:** {', '.join(unbal)} have more reactive than planned tasks.")
+tc      = filtered.groupby(['Store','Task name']).size().reset_index(name='Count')
+react   = tc[tc['Count']==1].groupby('Store')['Count'].count()
+plan    = tc[tc['Count']>1].groupby('Store')['Count'].count().add(0)
+unbal   = react[react > plan].index.tolist()
+insights.append(f"**Planned vs Reactive:** {', '.join(unbal)} more reactive than planned tasks.")
 
-# Store Focus Drift
-cats = filtered.groupby('Store')['Task category'].nunique()
+# Focus Drift
+cats  = filtered.groupby('Store')['Task category'].nunique()
 drift = cats[cats > 5].index.tolist()
 insights.append(f"**Focus Drift:** {', '.join(drift)} handle >5 task categories.")
 
-for insight in insights:
-    st.markdown(f"- {insight}")
+for item in insights:
+    st.markdown(f"- {item}", unsafe_allow_html=True)
 
 # --- Task Effort & Performance by Task ---
 st.markdown("### Task Effort & Performance by Task")
@@ -172,7 +174,7 @@ st.markdown("")  # spacer
 st.markdown("### Store Performance Snapshot")
 cols = ['Store','Total_Tasks','Overdue_Rate','Avg_Days','Performance']
 for k in ['CSAT','Cleanliness','Sales_vs_Target']:
-    if k in summary:
+    if k in summary.columns:
         cols.append(k)
 df_display = summary[cols].rename(columns={'Avg_Days':'Avg Days Relative'})
 st.dataframe(df_display, use_container_width=True)
@@ -181,19 +183,18 @@ st.dataframe(df_display, use_container_width=True)
 query = st.sidebar.text_input("🔍 Store Details")
 if query:
     try:
-        d = filtered[filtered['Store'].str.contains(query, case=False)]
-        if d.empty:
+        detail = filtered[filtered['Store'].str.contains(query, case=False)]
+        if detail.empty:
             st.warning(f"No data found for '{query}'")
         else:
-            a = d['Days Before Due'].mean()
-            p = 'Early' if a>0 else ('On Time' if a==0 else 'Late')
+            avg  = detail['Days Before Due'].mean()
+            perf = 'Early' if avg>0 else ('On Time' if avg==0 else 'Late')
             st.markdown(f"### Details for {query}")
-            st.write(f"- Performance: **{p}**")
-            st.write(f"- Avg Days Relative: {a:.1f}")
-            st.write(f"- Total Tasks: {len(d)}")
-            st.write(f"- Overdue Tasks: {int(d['Overdue'].sum())}")
-            if 'CSAT Score' in d:
-                st.write(f"- Avg CSAT: {d['CSAT Score'].mean():.1f}")
+            st.write(f"- Performance: **{perf}**")
+            st.write(f"- Avg Days Relative: {avg:.1f}")
+            st.write(f"- Total Tasks: {len(detail)}")
+            st.write(f"- Overdue Tasks: {int(detail['Overdue'].sum())}")
+            if 'CSAT Score' in detail.columns:
+                st.write(f"- Avg CSAT: {detail['CSAT Score'].mean():.1f}")
     except Exception as e:
-        st.error(f"Error loading details: {e}")
-
+        st.error(f"Error loading store details: {e}")
