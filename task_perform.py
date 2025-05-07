@@ -66,7 +66,6 @@ if task_file:
     avg_speed = filtered['Days Before Due'].mean()
     overdue_count = int(filtered['Overdue'].sum())
     adhoc = (filtered['Store'].value_counts() == 1).sum()
-    # avg_csat only if column exists
     avg_csat = filtered['CSAT Score'].mean() if 'CSAT Score' in filtered.columns else None
 
     st.title("Task Performance Dashboard")
@@ -86,7 +85,6 @@ if task_file:
         Overdue_Rate=('Overdue','mean'),
         Avg_Days_Relative=('Days Before Due','mean')
     )
-    # Include KPIs if available
     if 'CSAT Score' in filtered.columns:
         summary_base['CSAT'] = filtered.groupby('Store')['CSAT Score'].mean()
     if 'Cleanliness Score' in filtered.columns:
@@ -109,7 +107,6 @@ if task_file:
 
     # Store Performance Snapshot Table
     display_cols = ['Store','Total_Tasks','Overdue_Rate','Avg_Days_Relative','Performance']
-    # add KPI columns if present
     if 'CSAT' in summary.columns:
         display_cols.append('CSAT')
     if 'Cleanliness' in summary.columns:
@@ -117,7 +114,8 @@ if task_file:
     if 'Sales_vs_Target' in summary.columns:
         display_cols.append('Sales_vs_Target')
 
-    styled = summary.sort_values('Overdue_Rate', ascending=False).style.format({
+    display_df = summary[display_cols]
+    styled = display_df.style.format({
         'Overdue_Rate':'{:.0%}',
         'Avg_Days_Relative':'{:.1f}',
         'CSAT':'{:.1f}',
@@ -128,7 +126,7 @@ if task_file:
             'color: #856404;' if v=='On Time' else 'color: #721c24;'
         ), subset=['Performance']
     )
-    st.dataframe(styled[display_cols], use_container_width=True)
+    st.dataframe(styled, use_container_width=True)
 
     # Store Detail Lookup
     store_query = st.sidebar.text_input("🔍 Store Details")
