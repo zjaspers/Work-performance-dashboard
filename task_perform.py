@@ -28,6 +28,12 @@ if task_file:
     df['Date completed'] = pd.to_datetime(df.get('Date completed'), errors='coerce')
     # Core metrics
     df['Days Before Due'] = (df['End date'] - df['Date completed']).dt.days
+
+    # Handle tasks with missing completion: assume not done and record Days Before Due as negative absolute days from today
+    now = pd.Timestamp.now().normalize()
+    missing_comp = df['Date completed'].isna() & df['End date'].notna()
+    df.loc[missing_comp, 'Days Before Due'] = -((df.loc[missing_comp, 'End date'] - now).abs().dt.days)
+
     df['Overdue'] = (df['End date'] < pd.Timestamp.now()) & (df['Task status'] != 'Completed')
     # Exclude company and non-stores
     df['Region'] = df['Level 1'].fillna('Unknown')
