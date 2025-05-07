@@ -7,7 +7,7 @@ from datetime import timedelta
 # Page configuration
 st.set_page_config(page_title="Task Performance Dashboard", layout="wide")
 
-# Cal.com AI inspired styling
+# Styling
 st.markdown("""<style>
     .block-container { padding: 2rem; font-family: 'Inter', sans-serif; }
     .stMetric { text-align: center !important; }
@@ -23,7 +23,7 @@ task_file = st.sidebar.file_uploader("➕ Upload Task CSV", type="csv")
 kpi_file = st.sidebar.file_uploader("📊 Upload Store KPI CSV", type="csv")
 
 if task_file:
-    # Load and preprocess task data
+    # Load task data
     df = pd.read_csv(task_file)
     df['End date'] = pd.to_datetime(df.get('End date'), errors='coerce')
     df['Date completed'] = pd.to_datetime(df.get('Date completed'), errors='coerce')
@@ -49,23 +49,24 @@ if task_file:
         kpi_df = pd.read_csv(kpi_file).rename(columns={'Location ID': 'Location external ID'})
         week_df = week_df.merge(kpi_df, on=['Location external ID', 'Store'], how='left')
 
-    # Filters for tasks and stores
+    # Filters
     task_options = sorted(week_df['Task name'].unique())
     selected_tasks = st.sidebar.multiselect("Filter by Task", task_options, default=task_options)
     store_options = sorted(week_df['Store'].unique())
     selected_stores = st.sidebar.multiselect("Filter by Store", store_options, default=[])
 
-    # Apply filters: tasks mandatory, stores optional
+    # Apply filters
     filtered = week_df[week_df['Task name'].isin(selected_tasks)]
     if selected_stores:
         filtered = filtered[filtered['Store'].isin(selected_stores)]
 
-    # === Top Key Metrics ===
+    # Key Metrics
     total = len(filtered)
     on_time = (filtered['Days Before Due'] >= 0).sum()
     avg_speed = filtered['Days Before Due'].mean()
     overdue_count = int(filtered['Overdue'].sum())
     adhoc = (filtered['Store'].value_counts() == 1).sum()
+    # avg_csat only if column exists
     avg_csat = filtered['CSAT Score'].mean() if 'CSAT Score' in filtered.columns else None
 
     st.title("Task Performance Dashboard")
@@ -79,31 +80,43 @@ if task_file:
     if avg_csat is not None:
         cols[5].metric("Avg CSAT", f"{avg_csat:.1f}")
 
-    # === Store Performance Category Summary ===
-    # Build per-store summary
-    summary = filtered.groupby('Store').agg(
+    # Store Status Summary
+    summary_base = filtered.groupby('Store').agg(
         Total_Tasks=('Store','size'),
         Overdue_Rate=('Overdue','mean'),
-        Avg_Days_Relative=('Days Before Due','mean'),
-        CSAT=('CSAT Score','mean'),
-        Cleanliness=('Cleanliness Score','mean'),
-        Sales_vs_Target=('Sales vs Target (%)','mean')
-    ).reset_index()
-    # Categorize performance
+        Avg_Days_Relative=('Days Before Due','mean')
+    )
+    # Include KPIs if available
+    if 'CSAT Score' in filtered.columns:
+        summary_base['CSAT'] = filtered.groupby('Store')['CSAT Score'].mean()
+    if 'Cleanliness Score' in filtered.columns:
+        summary_base['Cleanliness'] = filtered.groupby('Store')['Cleanliness Score'].mean()
+    if 'Sales vs Target (%)' in filtered.columns:
+        summary_base['Sales_vs_Target'] = filtered.groupby('Store')['Sales vs Target (%)'].mean()
+
+    summary = summary_base.reset_index()
     def categorize(x):
         return 'Early' if x > 0 else ('On Time' if x == 0 else 'Late')
     summary['Performance'] = summary['Avg_Days_Relative'].apply(categorize)
-    # Count stores per category
-    counts = summary['Performance'].value_counts().to_dict()
 
+    # Count by category
+    counts = summary['Performance'].value_counts().to_dict()
     st.markdown("### Store Status Summary")
     scols = st.columns(3)
     scols[0].metric("Stores Early", counts.get('Early', 0))
     scols[1].metric("Stores On Time", counts.get('On Time', 0))
     scols[2].metric("Stores Late", counts.get('Late', 0))
 
-    # === Store Performance Snapshot Table ===
-    st.markdown("### Store Performance Snapshot")
+    # Store Performance Snapshot Table
+    display_cols = ['Store','Total_Tasks','Overdue_Rate','Avg_Days_Relative','Performance']
+    # add KPI columns if present
+    if 'CSAT' in summary.columns:
+        display_cols.append('CSAT')
+    if 'Cleanliness' in summary.columns:
+        display_cols.append('Cleanliness')
+    if 'Sales_vs_Target' in summary.columns:
+        display_cols.append('Sales_vs_Target')
+
     styled = summary.sort_values('Overdue_Rate', ascending=False).style.format({
         'Overdue_Rate':'{:.0%}',
         'Avg_Days_Relative':'{:.1f}',
@@ -115,9 +128,9 @@ if task_file:
             'color: #856404;' if v=='On Time' else 'color: #721c24;'
         ), subset=['Performance']
     )
-    st.dataframe(styled, use_container_width=True)
+    st.dataframe(styled[display_cols], use_container_width=True)
 
-    # === Store Detail Lookup ===
+    # Store Detail Lookup
     store_query = st.sidebar.text_input("🔍 Store Details")
     if store_query:
         detail = filtered[filtered['Store'].str.contains(store_query, case=False)]
