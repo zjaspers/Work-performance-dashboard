@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -8,22 +7,24 @@ from datetime import timedelta
 st.set_page_config(page_title="Task Performance Dashboard", layout="wide")
 
 # Styling
-st.markdown("""<style>
+st.markdown("""
+<style>
     .block-container { padding: 2rem; font-family: 'Inter', sans-serif; }
     .stMetric { text-align: center !important; }
     .performance-early { color: #155724; font-weight: bold; }
     .performance-on-time { color: #856404; font-weight: bold; }
     .performance-late { color: #721c24; font-weight: bold; }
     .dataframe tbody tr:hover { background-color: #f1f1f1; }
-</style>""", unsafe_allow_html=True)
+</style>
+""", unsafe_allow_html=True)
 
 # Sidebar: uploads and filters
 st.sidebar.title("Upload & Filters")
 task_file = st.sidebar.file_uploader("➕ Upload Task CSV", type="csv")
-kpi_file = st.sidebar.file_uploader("📊 Upload Store KPI CSV", type="csv")
+kpi_file = st.sidebar.file_uploader("📊 Upload Store KPI CSV (optional)", type="csv")
 
 if task_file:
-    # Load task data
+    # Load and preprocess task data
     df = pd.read_csv(task_file)
     df['End date'] = pd.to_datetime(df.get('End date'), errors='coerce')
     df['Date completed'] = pd.to_datetime(df.get('Date completed'), errors='coerce')
@@ -40,8 +41,8 @@ if task_file:
     # Week selector
     weeks = sorted(df['Week Start'].dropna().unique(), reverse=True)
     week_labels = [f"{w.date()} to {(w + timedelta(days=6)).date()}" for w in weeks]
-    week_choice = st.sidebar.selectbox("Select Week", week_labels)
-    sel_start = weeks[week_labels.index(week_choice)]
+    sel = st.sidebar.selectbox("Select Week", week_labels)
+    sel_start = weeks[week_labels.index(sel)]
     week_df = df[df['Week Start'] == sel_start]
 
     # Merge KPI data if provided
@@ -50,10 +51,10 @@ if task_file:
         week_df = week_df.merge(kpi_df, on=['Location external ID', 'Store'], how='left')
 
     # Filters
-    task_options = sorted(week_df['Task name'].unique())
-    selected_tasks = st.sidebar.multiselect("Filter by Task", task_options, default=task_options)
-    store_options = sorted(week_df['Store'].unique())
-    selected_stores = st.sidebar.multiselect("Filter by Store", store_options, default=[])
+    task_opts = sorted(week_df['Task name'].unique())
+    selected_tasks = st.sidebar.multiselect("Filter by Task", task_opts, default=task_opts)
+    store_opts = sorted(week_df['Store'].unique())
+    selected_stores = st.sidebar.multiselect("Filter by Store", store_opts, default=[])
 
     # Apply filters
     filtered = week_df[week_df['Task name'].isin(selected_tasks)]
@@ -131,18 +132,21 @@ if task_file:
     # Store Detail Lookup
     store_query = st.sidebar.text_input("🔍 Store Details")
     if store_query:
-        detail = filtered[filtered['Store'].str.contains(store_query, case=False)]
-        if not detail.empty:
-            avg = detail['Days Before Due'].mean()
-            perf = categorize(avg)
-            st.markdown(f"### Details for {store_query}")
-            st.write(f"- Performance: **{perf}**")
-            st.write(f"- Avg Days Relative to Due: {avg:.1f}")
-            st.write(f"- Total Tasks: {len(detail)}")
-            st.write(f"- Overdue Tasks: {detail['Overdue'].sum()}")
-            if 'CSAT Score' in detail.columns:
-                st.write(f"- Avg CSAT Score: {detail['CSAT Score'].mean():.1f}")
-        else:
-            st.write(f"No data for '{store_query}'.")
+        try:
+            detail = filtered[filtered['Store'].str.contains(store_query, case=False)]
+            if detail.empty:
+                st.warning(f"No data found for '{store_query}'")
+            else:
+                avg = detail['Days Before Due'].mean()
+                perf = categorize(avg)
+                st.markdown(f"### Details for {store_query}")
+                st.write(f"- Performance: **{perf}**")
+                st.write(f"- Avg Days Relative to Due: {avg:.1f}")
+                st.write(f"- Total Tasks: {len(detail)}")
+                st.write(f"- Overdue Tasks: {int(detail['Overdue'].sum())}")
+                if 'CSAT Score' in detail.columns:
+                    st.write(f"- Avg CSAT Score: {detail['CSAT Score'].mean():.1f}")
+        except Exception as e:
+            st.error(f"Unable to load store details: {e}")
 else:
     st.info("Upload Task CSV to begin.")
