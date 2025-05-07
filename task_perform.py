@@ -1,107 +1,165 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
+import numpy as np
+from datetime import datetime, timedelta
 
-# Page setup
+# Page configuration
 st.set_page_config(page_title="Task Performance Dashboard", layout="wide")
 st.markdown(
-    '''
+    """
     <style>
-        .block-container { padding-top: 2rem; }
+        .block-container { padding: 2rem; }
         .stMetric { text-align: center !important; }
-        .stButton>button { background-color: #0F172A; color: white; border-radius: 5px; }
-        .st-emotion-cache-1v0mbdj, .st-emotion-cache-1fcbxyh { padding: 1rem 2rem; }
+        .stSidebar { background-color: #F7F7F7; }
     </style>
-    ''',
-    unsafe_allow_html=True
+    """, unsafe_allow_html=True
 )
 
-# Sidebar for uploads
-st.sidebar.title("Upload Files")
+# Sidebar uploads and week selector
+st.sidebar.title("Upload & Parameters")
 task_file = st.sidebar.file_uploader("➕ Task CSV", type="csv", key="task_csv")
 kpi_file = st.sidebar.file_uploader("📊 Store KPI CSV", type="csv", key="kpi_csv")
 
-st.title("Task Performance Dashboard")
-
+# Once task data is uploaded, process for week selection
 if task_file:
-    task_df = pd.read_csv(task_file)
-    task_df['End date'] = pd.to_datetime(task_df['End date'], errors='coerce')
-    task_df['Date completed'] = pd.to_datetime(task_df['Date completed'], errors='coerce')
-    task_df['Days Before Due'] = (task_df['End date'] - task_df['Date completed']).dt.days
-    task_df['Overdue'] = (task_df['End date'] < pd.Timestamp.now()) & (task_df['Task status'] != 'Completed')
+    df = pd.read_csv(task_file)
+    # Parse dates
+    df['End date'] = pd.to_datetime(df.get('End date'), errors='coerce')
+    df['Date completed'] = pd.to_datetime(df.get('Date completed'), errors='coerce')
+    # Core metrics
+    df['Days Before Due'] = (df['End date'] - df['Date completed']).dt.days
+    df['Overdue'] = (df['End date'] < pd.Timestamp.now()) & (df['Task status'] != 'Completed')
+    # Exclude company and non-stores
+    df['Region'] = df['Level 1'].fillna('Unknown')
+    df['Store'] = df['Location name']
+    df = df[~df['Store'].isin(['JameTrade', 'Midwest'])]
 
-    # Region & Store Cleanup
-    task_df['Region'] = task_df['Level 1'].fillna('Unknown')
-    task_df['Store'] = task_df['Location name']
-    excluded_stores = ['JameTrade', 'Midwest']
-    task_df = task_df[~task_df['Store'].isin(excluded_stores)]
+    # Determine week start (Monday) for each task
+    df['Week Start'] = df['End date'].dt.to_period('W').apply(lambda r: r.start_time)
+    # Week options sorted descending
+    weeks = sorted(df['Week Start'].dropna().unique(), reverse=True)
+    week_labels = [f"{w.date()} to {(w + timedelta(days=6)).date()}" for w in weeks]
+    week_choice = st.sidebar.selectbox("Select Week (Mon–Sun)", week_labels)
 
-    # Base metrics
-    total_tasks = len(task_df)
-    overdue_tasks = task_df['Overdue'].sum()
-    completed_on_time = task_df[task_df['Days Before Due'] >= 0].shape[0]
-    ad_hoc_tasks = task_df['Store'].value_counts()[task_df['Store'].value_counts() == 1].shape[0]
-    avg_days_before_due = task_df['Days Before Due'].dropna().mean()
-    common_category = task_df['Task category'].mode()[0] if not task_df['Task category'].mode().empty else 'N/A'
+    # Filter data for the selected week
+    selected_start = weeks[week_labels.index(week_choice)]
+    week_df = df[df['Week Start'] == selected_start]
 
-    # KPIs
-    st.markdown("### High-Level KPIs")
-    kpi1, kpi2, kpi3 = st.columns(3)
-    kpi1.metric("Total Tasks", total_tasks)
-    kpi2.metric("Completed On Time", f"{completed_on_time / total_tasks:.0%}")
-    kpi3.metric("Avg Days Before Due", f"{avg_days_before_due:.1f}")
-
-    kpi4, kpi5, kpi6 = st.columns(3)
-    kpi4.metric("Overdue Tasks", overdue_tasks)
-    kpi5.metric("Ad Hoc Tasks", ad_hoc_tasks)
-    kpi6.metric("Top Task Category", common_category)
-
-    # Quick List of Proactive Stores
-    st.markdown("### Most Proactive Stores")
-    proactive = task_df.dropna(subset=['Days Before Due'])
-    proactive = proactive.groupby('Store')['Days Before Due'].mean().sort_values(ascending=False).head(10)
-    for store, days in proactive.items():
-        st.markdown(f"- **{store}** — Avg {days:.1f} days early")
-
-    # Overdue store chart
-    st.markdown("### Stores with Most Overdue Tasks")
-    overdue_counts = task_df[task_df['Overdue']].groupby('Store').size().sort_values(ascending=False).head(10)
-    fig2, ax2 = plt.subplots(figsize=(8, 5))
-    sns.barplot(x=overdue_counts.values, y=overdue_counts.index, palette='Reds_d', ax=ax2)
-    ax2.set_title("Top 10 Stores with Overdue Tasks")
-    ax2.set_xlabel("Overdue Task Count")
-    st.pyplot(fig2)
-
-    # Integrate Store KPIs
+    # Merge with KPI data if available
     if kpi_file:
         kpi_df = pd.read_csv(kpi_file)
-        kpi_df.rename(columns={"Location ID": "Location external ID"}, inplace=True)
-        merged_df = pd.merge(task_df, kpi_df, on=["Location external ID", "Store"], how="left")
+        # Ensure column matching
+        kpi_df.rename(columns={'Location ID': 'Location external ID'}, inplace=True)
+        week_df = week_df.merge(kpi_df, on=['Location external ID', 'Store'], how='left')
 
-        st.markdown("### Store Health Score")
-        score_df = merged_df.groupby('Store').agg({
-            'Overdue': 'mean',
-            'Days Before Due': 'mean',
-            'CSAT Score': 'mean',
-            'Cleanliness Score': 'mean',
-            'Sales vs Target (%)': 'mean'
-        }).dropna().head(10)
+    # === Smart Insights ===
+    insights = []
+    # Region change in overdue rate vs previous week
+    prev_start = selected_start - timedelta(weeks=1)
+    prev_df = df[df['Week Start'] == prev_start]
+    if not prev_df.empty:
+        curr_region = week_df.groupby('Region')['Overdue'].mean()
+        prev_region = prev_df.groupby('Region')['Overdue'].mean()
+        for region in curr_region.index:
+            curr_rate = curr_region.get(region, 0)
+            prev_rate = prev_region.get(region, 0)
+            delta = (curr_rate - prev_rate) * 100
+            if abs(delta) >= 1:
+                trend = "risen" if delta > 0 else "fallen"
+                insights.append(f"Region {region} overdue rate has {trend} by {abs(delta):.1f}% since last week.")
+    # Store speed change
+    curr_speed = week_df.groupby('Store')['Days Before Due'].mean()
+    prev_speed = prev_df.groupby('Store')['Days Before Due'].mean()
+    for store in curr_speed.index:
+        curr_s = curr_speed.get(store, np.nan)
+        prev_s = prev_speed.get(store, np.nan)
+        if not np.isnan(prev_s):
+            delta = curr_s - prev_s
+            if abs(delta) >= 0.5:
+                trend = "slower" if delta < 0 else "faster"
+                insights.append(f"{store} completed tasks {abs(delta):.1f} days {trend} than last week.")
 
-        score_df['Health Score'] = (
-            (1 - score_df['Overdue']) * 0.3 +
-            (score_df['Days Before Due'] / score_df['Days Before Due'].max()) * 0.2 +
-            (score_df['CSAT Score'] / 100) * 0.2 +
-            (score_df['Cleanliness Score'] / 100) * 0.2 +
-            ((score_df['Sales vs Target (%)'] + 15) / 35) * 0.1
-        ) * 100
+    # CSAT insight
+    if 'CSAT Score' in week_df.columns:
+        low_csat = week_df.groupby('Store')['CSAT Score'].mean()
+        for store, csat in low_csat.items():
+            if csat < 70:
+                insights.append(f"{store} has low CSAT ({csat:.1f}), consider reviewing customer tasks.")
 
-        st.dataframe(score_df[['Health Score', 'CSAT Score', 'Cleanliness Score', 'Sales vs Target (%)']].sort_values(by='Health Score', ascending=False).style.format({
-            'Health Score': '{:.1f}',
-            'CSAT Score': '{:.1f}',
-            'Cleanliness Score': '{:.1f}',
-            'Sales vs Target (%)': '{:.1f}%'
+    # === Header & Insights ===
+    st.title("Task Performance Dashboard")
+    st.markdown("#### Insights")
+    for ins in insights[:5]:
+        st.markdown(f"- {ins}")
+
+    # === Weekly KPIs ===
+    total_tasks = len(week_df)
+    overdue_tasks = int(week_df['Overdue'].sum())
+    on_time = int((week_df['Days Before Due'] >= 0).sum())
+    avg_speed = week_df['Days Before Due'].mean()
+    ad_hoc = int(week_df['Store'].value_counts()[week_df['Store'].value_counts() == 1].sum())
+    st.markdown("### This Week's Key Metrics")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Tasks", total_tasks)
+    c2.metric("% On Time", f"{on_time/total_tasks:.0%}" if total_tasks else "N/A")
+    c3.metric("Avg Days Before Due", f"{avg_speed:.1f}" if not np.isnan(avg_speed) else "N/A")
+    c4, c5, c6 = st.columns(3)
+    c4.metric("Overdue Tasks", overdue_tasks)
+    c5.metric("Ad Hoc Tasks", ad_hoc)
+    c6.metric("Completed Early", f"{(week_df['Days Before Due']>0).mean():.0%}")
+
+    # === Regional Summary ===
+    st.markdown("### Regional Summary")
+    region_summary = week_df.groupby('Region').agg(
+        Total_Tasks=('Overdue','size'),
+        Overdue_Rate=('Overdue','mean'),
+        Avg_Speed=('Days Before Due','mean')
+    ).sort_values(by='Overdue_Rate', ascending=False)
+    st.dataframe(region_summary.style.format({
+        'Overdue_Rate':'{:.0%}',
+        'Avg_Speed':'{:.1f}'
+    }), use_container_width=True)
+
+    # === Proactive Stores List ===
+    st.markdown("### Top Proactive Stores")
+    top_proactive = curr_speed.sort_values(ascending=False).head(5)
+    for store, days in top_proactive.items():
+        st.markdown(f"- {store}: {days:.1f} days early")
+
+    # === Health Score & Alerts ===
+    if 'CSAT Score' in week_df.columns:
+        st.markdown("### Store Health Scores")
+        health = week_df.groupby('Store').agg(
+            Overdue_Rate=('Overdue','mean'),
+            Speed=('Days Before Due','mean'),
+            CSAT=('CSAT Score','mean'),
+            Clean=('Cleanliness Score','mean'),
+            Sales=('Sales vs Target (%)','mean')
+        )
+        # Compute composite
+        health['Health Score'] = (
+            (1 - health['Overdue_Rate'])*0.3 +
+            (health['Speed']/health['Speed'].max())*0.2 +
+            (health['CSAT']/100)*0.2 +
+            (health['Clean']/100)*0.2 +
+            ((health['Sales']+15)/35)*0.1
+        )*100
+        st.dataframe(health.sort_values('Health Score', ascending=False).style.format({
+            'Health Score':'{:.1f}',
+            'Overdue_Rate':'{:.0%}',
+            'Speed':'{:.1f}',
+            'CSAT':'{:.1f}',
+            'Clean':'{:.1f}',
+            'Sales':'{:.1f}%'
         }), use_container_width=True)
 
+        # Alerts: export underperformers
+        under = health[health['Health Score'] < 65].reset_index()
+        if not under.empty:
+            st.markdown("#### Underperforming Stores (Health < 65)")
+            st.dataframe(under[['Store','Health Score']].style.format({'Health Score':'{:.1f}'}))
+            csv = under.to_csv(index=False).encode('utf-8')
+            st.download_button("Export Underperformers CSV", data=csv,
+                               file_name="underperforming_stores.csv")
 else:
-    st.info("Use the ➕ in the sidebar to upload your WorkJam task CSV.")
+    st.info("Upload the task CSV to get started.")
