@@ -27,6 +27,25 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ─── Utility Functions ───────────────────────────────────────────────
+@st.cache_data
+def load_csv(path):
+    return pd.read_csv(path)
+
+def preprocess_tasks(df):
+    df['End date']       = pd.to_datetime(df['End date'], errors='coerce')
+    df['Date completed'] = pd.to_datetime(df['Date completed'], errors='coerce')
+    today = pd.Timestamp.now().normalize()
+    df['Days Before Due'] = (df['End date'] - df['Date completed']).dt.days
+    missing = df['Date completed'].isna() & df['End date'].notna()
+    df.loc[missing, 'Days Before Due'] = -((df.loc[missing,'End date'] - today).dt.days)
+    df['Overdue'] = (df['Days Before Due'] < 0)
+    df['Region'] = df['Level 1'].fillna('Unknown')
+    df['Store']  = df['Location name']
+    df = df[~df['Store'].isin(['JameTrade','Midwest'])]
+    df['Week Start'] = df['End date'].dt.to_period('W').apply(lambda r: r.start_time)
+    return df
+
 def metric_card(label, value):
     st.markdown(f"""
       <div class="metric-card">
@@ -35,108 +54,134 @@ def metric_card(label, value):
       </div>
     """, unsafe_allow_html=True)
 
-@st.cache_data
-def load_csv(fpath):
-    return pd.read_csv(fpath)
-
-def preprocess(df):
-    df['End date'] = pd.to_datetime(df['End date'], errors='coerce')
-    df['Date completed'] = pd.to_datetime(df['Date completed'], errors='coerce')
-    today = pd.Timestamp.now().normalize()
-    df['Days Before Due'] = (df['End date'] - df['Date completed']).dt.days
-    missing = df['Date completed'].isna() & df['End date'].notna()
-    df.loc[missing, 'Days Before Due'] = -((df.loc[missing,'End date'] - today).dt.days)
-    df['Overdue'] = (df['Days Before Due'] < 0)
-    df['Region'] = df['Level 1'].fillna('Unknown')
-    df['Store'] = df['Location name']
-    df = df[~df['Store'].isin(['JameTrade','Midwest'])]
-    df['Week Start'] = df['End date'].dt.to_period('W').apply(lambda r: r.start_time)
-    return df
-
-# ─── Sidebar ─────────────────────────────────────────────────────────
-st.sidebar.header("Upload & Filters")
+# ─── Sidebar: Uploads & Filters ───────────────────────────────────────
+st.sidebar.header("Data & Filters")
 task_file = st.sidebar.file_uploader("➕ Task CSV", type="csv")
 kpi_file  = st.sidebar.file_uploader("📊 Store KPI CSV (optional)", type="csv")
 
 if not task_file:
-    st.info("Please upload the Task CSV to proceed.")
+    st.sidebar.info("Upload Task CSV to begin.")
     st.stop()
 
-# ─── Load & Prepare ──────────────────────────────────────────────────
+# ─── Load & Prepare Data ─────────────────────────────────────────────
 df = load_csv(task_file)
-df = preprocess(df)
+df = preprocess_tasks(df)
 if kpi_file:
-    kpi = load_csv(kpi_file).rename(columns={'Location ID': 'Location external ID'})
-    df = df.merge(kpi, on=['Location external ID','Store'], how='left')
+    kpi_df = load_csv(kpi_file).rename(columns={'Location ID':'Location external ID'})
+    df = df.merge(kpi_df, on=['Location external ID','Store'], how='left')
 
 # ─── Week Selector ───────────────────────────────────────────────────
-weeks = sorted(df['Week Start'].dropna().unique(), reverse=True)
-labels = [f"{w.date()}–{(w+timedelta(days=6)).date()}" for w in weeks]
-choice = st.sidebar.selectbox("Select Week", labels)
-start  = weeks[labels.index(choice)]
+weeks  = sorted(df['Week Start'].dropna().unique(), reverse=True)
+labels = [f"{w.date()}–{(w + timedelta(days=6)).date()}" for w in weeks]
+sel    = st.sidebar.selectbox("Select Week", labels)
+start  = weeks[labels.index(sel)]
 week_df = df[df['Week Start'] == start]
 
 # ─── Filters ─────────────────────────────────────────────────────────
-tasks  = sorted(week_df['Task name'].unique())
-stores = sorted(week_df['Store'].unique())
-sel_tasks  = st.sidebar.multiselect("Filter by Task", tasks, default=tasks)
-sel_stores = st.sidebar.multiselect("Filter by Store", stores)
+task_list  = sorted(week_df['Task name'].unique())
+store_list = sorted(week_df['Store'].unique())
+sel_tasks  = st.sidebar.multiselect("Filter by Task",  task_list,  default=task_list)
+sel_stores = st.sidebar.multiselect("Filter by Store", store_list)
 
 filtered = week_df[week_df['Task name'].isin(sel_tasks)]
 if sel_stores:
     filtered = filtered[filtered['Store'].isin(sel_stores)]
 
-# ─── Key Metrics ─────────────────────────────────────────────────────
-st.title("Task Performance Dashboard")
-st.markdown("### Key Metrics")
+# ─── Tabs ─────────────────────────────────────────────────────────────
+tab1, tab2, tab3, tab4 = st.tabs([
+    "📊 Key Metrics", 
+    "🏬 Store Performance", 
+    "🛠 Task Analysis", 
+    "💡 Recommendations"
+])
 
-# Total unique tasks by Task ID
-total_tasks     = filtered['Task ID'].nunique()
-# On-time tasks: Task ID groups where max Days Before Due ≥ 0
-on_time_tasks   = filtered.groupby('Task ID')['Days Before Due'].max().ge(0).sum()
-avg_days_before = filtered.groupby('Task ID')['Days Before Due'].mean().mean().round(1)
-overdue_tasks   = total_tasks - on_time_tasks
-# Ad hoc tasks: Task IDs assigned to exactly one store
-ad_hoc_tasks    = filtered.groupby('Task ID')['Store'].nunique().eq(1).sum()
-avg_csat        = filtered['CSAT Score'].mean() if 'CSAT Score' in filtered.columns else None
+# ─── Tab 1: Key Metrics ──────────────────────────────────────────────
+with tab1:
+    st.header("Key Metrics")
+    total    = len(filtered)
+    on_time  = (filtered['Days Before Due'] >= 0).sum()
+    avg_spd  = filtered['Days Before Due'].mean()
+    overdue  = int(filtered['Overdue'].sum())
+    adhoc    = (filtered['Store'].value_counts() == 1).sum()
+    avg_csat = filtered['CSAT Score'].mean() if 'CSAT Score' in filtered.columns else None
 
-c1, c2, c3, c4, c5, c6 = st.columns(6)
-metric_card("Total Tasks", total_tasks)
-metric_card("% On Time", f"{on_time_tasks/total_tasks:.0%}")
-metric_card("Avg Days Before Due", avg_days_before)
-metric_card("Overdue Tasks", overdue_tasks)
-metric_card("Ad Hoc Tasks", ad_hoc_tasks)
-if avg_csat is not None:
-    metric_card("Avg CSAT", f"{avg_csat:.1f}")
+    cols = st.columns(6)
+    with cols[0]: metric_card("Total Tasks", total)
+    with cols[1]: metric_card("% On Time", f"{on_time/total:.0%}" if total else "N/A")
+    with cols[2]: metric_card("Avg Early/Late (days)", f"{avg_spd:.1f}" if not np.isnan(avg_spd) else "N/A")
+    with cols[3]: metric_card("Overdue Tasks", overdue)
+    with cols[4]: metric_card("Ad Hoc Tasks", adhoc)
+    if avg_csat is not None:
+        with cols[5]: metric_card("Avg CSAT", f"{avg_csat:.1f}")
 
-# ─── Store Status Summary ───────────────────────────────────────────
-st.markdown("### Store Status Summary")
-sb = filtered.groupby('Store').agg(
-    Total_Tasks     = ('Task ID','nunique'),
-    Overdue_Rate    = ('Overdue','mean'),
-    Avg_Days_Rel    = ('Days Before Due','mean')
-)
-# merge KPIs if present
-if 'CSAT Score' in filtered: sb['CSAT'] = filtered.groupby('Store')['CSAT Score'].mean()
-if 'Sales vs Target (%)' in filtered: sb['Sales'] = filtered.groupby('Store')['Sales vs Target (%)'].mean()
+# ─── Tab 2: Store Performance ────────────────────────────────────────
+with tab2:
+    st.header("Store Performance")
+    sb = filtered.groupby('Store').agg(
+        Total_Tasks=('Store','size'),
+        Overdue_Rate=('Overdue','mean'),
+        Avg_Days=('Days Before Due','mean')
+    )
+    if 'CSAT Score' in filtered.columns:
+        sb['CSAT'] = filtered.groupby('Store')['CSAT Score'].mean()
+    if 'Sales vs Target (%)' in filtered.columns:
+        sb['Sales_vs_Target'] = filtered.groupby('Store')['Sales vs Target (%)'].mean()
 
-sb = sb.reset_index()
-sb['Performance'] = sb['Avg_Days_Rel'].apply(lambda x: 'Early' if x>0 else ('On Time' if x==0 else 'Late'))
+    summary = sb.reset_index()
+    summary['Performance'] = summary['Avg_Days'].apply(
+        lambda x: 'Early' if x>0 else ('On Time' if x==0 else 'Late')
+    )
 
-# Barplot
-plt.figure(figsize=(8,4))
-sns.barplot(
-    data=sb, x='Overdue_Rate', y='Store', hue='Performance', dodge=False,
-    palette={'Early':'green','On Time':'gold','Late':'red'}
-)
-plt.xlabel("Overdue Rate")
-st.pyplot(plt.gcf())
+    plt.figure(figsize=(8,4))
+    sns.barplot(
+        data=summary, x='Overdue_Rate', y='Store', hue='Performance', dodge=False,
+        palette={'Early':'green','On Time':'gold','Late':'red'}
+    )
+    plt.xlabel("Overdue Rate")
+    st.pyplot(plt.gcf())
 
-st.dataframe(
-    sb.style.format({
-        'Overdue_Rate':'{:.0%}',
-        'Avg_Days_Rel':'{:.1f}',
-        'CSAT':'{:.1f}',
-        'Sales':'{:.1f}%'
-    }), use_container_width=True
-)
+    st.dataframe(
+        summary.style.format({
+            'Overdue_Rate':'{:.0%}',
+            'Avg_Days':'{:.1f}',
+            'CSAT':'{:.1f}',
+            'Sales_vs_Target':'{:.1f}%'
+        }),
+        use_container_width=True
+    )
+
+# ─── Tab 3: Task Analysis ────────────────────────────────────────────
+with tab3:
+    st.header("Task Effort & Performance by Task")
+    ta = filtered.groupby('Task name').agg(
+        Count=('Task name','size'),
+        Effort=('Expected duration','sum'),
+        Overdue=('Overdue','mean'),
+        Speed=('Days Before Due','mean')
+    ).reset_index()
+
+    plt.figure(figsize=(6,6))
+    sizes = (ta['Count'] / ta['Count'].max()) * 300
+    plt.scatter(ta['Effort'], ta['Overdue'], s=sizes, alpha=0.6)
+    for i,row in ta.iterrows():
+        plt.text(row['Effort'], row['Overdue'], row['Task name'], fontsize=8)
+    plt.xlabel("Total Effort (hrs)")
+    plt.ylabel("Overdue Rate")
+    st.pyplot(plt.gcf())
+
+    ta['Overdue'] = ta['Overdue'].map("{:.0%}".format)
+    ta['Speed']   = ta['Speed'].round(1)
+    st.dataframe(ta, use_container_width=True)
+
+# ─── Tab 4: Recommendations ─────────────────────────────────────────
+with tab4:
+    st.header("Recommendations & Insights")
+    insights = []
+    if 'CSAT Score' in filtered.columns:
+        corr = filtered['Days Before Due'].corr(filtered['CSAT Score'])
+        insights.append(f"- **Completion vs CSAT correlation:** {corr:.2f}")
+    late = summary[summary['Performance']=='Late']['Store'].tolist()
+    if late:
+        insights.append(f"- **Alert:** Stores behind: {', '.join(late)}")
+    for ins in insights:
+        st.markdown(ins)
