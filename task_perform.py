@@ -6,7 +6,10 @@ import seaborn as sns
 from datetime import timedelta
 
 # ─── Page Configuration ──────────────────────────────────────────────
-st.set_page_config(page_title="Task Performance Dashboard", layout="wide")
+st.set_page_config(
+    page_title="Task Performance Dashboard",
+    layout="wide",
+)
 
 # ─── Styling ─────────────────────────────────────────────────────────
 st.markdown("""
@@ -28,9 +31,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ─── Utility Functions ───────────────────────────────────────────────
-@st.cache_data
-def load_csv(path):
-    return pd.read_csv(path)
+@st.cache_data(show_spinner=False)
+def load_csv(f):
+    return pd.read_csv(f)
 
 def preprocess_tasks(df):
     df['End date']       = pd.to_datetime(df['End date'], errors='coerce')
@@ -39,7 +42,7 @@ def preprocess_tasks(df):
     df['Days Before Due'] = (df['End date'] - df['Date completed']).dt.days
     missing = df['Date completed'].isna() & df['End date'].notna()
     df.loc[missing, 'Days Before Due'] = -((df.loc[missing,'End date'] - today).dt.days)
-    df['Overdue'] = (df['Days Before Due'] < 0)
+    df['Overdue'] = (df['End date'] < pd.Timestamp.now()) & (df['Task status'] != 'Completed')
     df['Region'] = df['Level 1'].fillna('Unknown')
     df['Store']  = df['Location name']
     df = df[~df['Store'].isin(['JameTrade','Midwest'])]
@@ -54,30 +57,30 @@ def metric_card(label, value):
       </div>
     """, unsafe_allow_html=True)
 
-# ─── Sidebar: Uploads & Filters ───────────────────────────────────────
+# ─── Sidebar: Upload & Filters ────────────────────────────────────────
 st.sidebar.header("Data & Filters")
 task_file = st.sidebar.file_uploader("➕ Task CSV", type="csv")
 kpi_file  = st.sidebar.file_uploader("📊 Store KPI CSV (optional)", type="csv")
 
 if not task_file:
-    st.sidebar.info("Upload Task CSV to begin.")
+    st.sidebar.info("Please upload your Task CSV.")
     st.stop()
 
 # ─── Load & Prepare Data ─────────────────────────────────────────────
 df = load_csv(task_file)
 df = preprocess_tasks(df)
 if kpi_file:
-    kpi_df = load_csv(kpi_file).rename(columns={'Location ID':'Location external ID'})
-    df = df.merge(kpi_df, on=['Location external ID','Store'], how='left')
+    kpi = load_csv(kpi_file).rename(columns={'Location ID':'Location external ID'})
+    df = df.merge(kpi, on=['Location external ID','Store'], how='left')
 
-# ─── Week Selector ───────────────────────────────────────────────────
+# Week selector
 weeks  = sorted(df['Week Start'].dropna().unique(), reverse=True)
-labels = [f"{w.date()}–{(w + timedelta(days=6)).date()}" for w in weeks]
+labels = [f"{w.date()}–{(w+timedelta(days=6)).date()}" for w in weeks]
 sel    = st.sidebar.selectbox("Select Week", labels)
 start  = weeks[labels.index(sel)]
 week_df = df[df['Week Start'] == start]
 
-# ─── Filters ─────────────────────────────────────────────────────────
+# Task & Store filters
 task_list  = sorted(week_df['Task name'].unique())
 store_list = sorted(week_df['Store'].unique())
 sel_tasks  = st.sidebar.multiselect("Filter by Task",  task_list,  default=task_list)
@@ -103,16 +106,16 @@ with tab1:
     avg_spd  = filtered['Days Before Due'].mean()
     overdue  = int(filtered['Overdue'].sum())
     adhoc    = (filtered['Store'].value_counts() == 1).sum()
-    avg_csat = filtered['CSAT Score'].mean() if 'CSAT Score' in filtered.columns else None
+    avg_csat = filtered['CSAT Score'].mean() if 'CSAT Score' in filtered else None
 
     cols = st.columns(6)
-    with cols[0]: metric_card("Total Tasks", total)
-    with cols[1]: metric_card("% On Time", f"{on_time/total:.0%}" if total else "N/A")
+    with cols[0]: metric_card("Total Tasks",           total)
+    with cols[1]: metric_card("% On Time",            f"{on_time/total:.0%}" if total else "N/A")
     with cols[2]: metric_card("Avg Early/Late (days)", f"{avg_spd:.1f}" if not np.isnan(avg_spd) else "N/A")
-    with cols[3]: metric_card("Overdue Tasks", overdue)
-    with cols[4]: metric_card("Ad Hoc Tasks", adhoc)
+    with cols[3]: metric_card("Overdue Tasks",        overdue)
+    with cols[4]: metric_card("Ad Hoc Tasks",         adhoc)
     if avg_csat is not None:
-        with cols[5]: metric_card("Avg CSAT", f"{avg_csat:.1f}")
+        with cols[5]: metric_card("Avg CSAT",         f"{avg_csat:.1f}")
 
 # ─── Tab 2: Store Performance ────────────────────────────────────────
 with tab2:
@@ -125,16 +128,18 @@ with tab2:
     if 'CSAT Score' in filtered.columns:
         sb['CSAT'] = filtered.groupby('Store')['CSAT Score'].mean()
     if 'Sales vs Target (%)' in filtered.columns:
-        sb['Sales_vs_Target'] = filtered.groupby('Store')['Sales vs Target (%)'].mean()
+        sb['Sales'] = filtered.groupby('Store')['Sales vs Target (%)'].mean()
 
     summary = sb.reset_index()
     summary['Performance'] = summary['Avg_Days'].apply(
         lambda x: 'Early' if x>0 else ('On Time' if x==0 else 'Late')
     )
 
+    # Bar chart of Overdue Rate
     plt.figure(figsize=(8,4))
     sns.barplot(
-        data=summary, x='Overdue_Rate', y='Store', hue='Performance', dodge=False,
+        data=summary, x='Overdue_Rate', y='Store',
+        hue='Performance', dodge=False,
         palette={'Early':'green','On Time':'gold','Late':'red'}
     )
     plt.xlabel("Overdue Rate")
@@ -145,7 +150,7 @@ with tab2:
             'Overdue_Rate':'{:.0%}',
             'Avg_Days':'{:.1f}',
             'CSAT':'{:.1f}',
-            'Sales_vs_Target':'{:.1f}%'
+            'Sales':'{:.1f}%'
         }),
         use_container_width=True
     )
@@ -177,11 +182,16 @@ with tab3:
 with tab4:
     st.header("Recommendations & Insights")
     insights = []
+
+    # Correlation
     if 'CSAT Score' in filtered.columns:
         corr = filtered['Days Before Due'].corr(filtered['CSAT Score'])
         insights.append(f"- **Completion vs CSAT correlation:** {corr:.2f}")
+
+    # Alert late stores
     late = summary[summary['Performance']=='Late']['Store'].tolist()
     if late:
         insights.append(f"- **Alert:** Stores behind: {', '.join(late)}")
+
     for ins in insights:
         st.markdown(ins)
