@@ -1,7 +1,3 @@
-# Update the Streamlit script to use a sidebar floating upload button style
-# Note: Streamlit doesn't support true floating buttons, but we can simulate this by placing the uploader in the sidebar.
-
-updated_script_with_sidebar_upload = """
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -9,10 +5,10 @@ import seaborn as sns
 
 # Configure Streamlit UI
 st.set_page_config(page_title="Task Performance Dashboard", layout="wide")
-st.markdown(\"""<style>
+st.markdown("""<style>
     .css-18e3th9 {padding-top: 1rem;}
     .css-1d391kg {padding-top: 1rem;}
-</style>\""", unsafe_allow_html=True)
+</style>""", unsafe_allow_html=True)
 
 # Sidebar for file upload
 st.sidebar.header("Upload Data")
@@ -95,11 +91,3 @@ if task_file:
         st.markdown("ℹ️ Store KPI integration is under construction — stay tuned.")
 else:
     st.info("Use the ➕ in the sidebar to upload your WorkJam task CSV.")
-"""
-
-# Save the updated version with sidebar upload
-sidebar_file_path = "/mnt/data/task_performance_dashboard_sidebar.py"
-with open(sidebar_file_path, "w") as f:
-    f.write(updated_script_with_sidebar_upload)
-
-sidebar_file_path
